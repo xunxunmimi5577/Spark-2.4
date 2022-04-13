@@ -49,26 +49,24 @@ private[spark] class OutputCommitCoordinator(conf: SparkConf, isDriver: Boolean)
   // Initialized by SparkEnv
   var coordinatorRef: Option[RpcEndpointRef] = None
 
-  // Class used to identify a committer. The task ID for a committer is implicitly defined by
-  // the partition being processed, but the coordinator needs to keep track of both the stage
-  // attempt and the task attempt, because in some situations the same task may be running
-  // concurrently in two different attempts of the same stage.
+  // 表征committer的类。 提交者的任务ID是由正在处理的分区隐式定义的，但是协调器需要同时跟踪stage尝试和task尝试，
+  // 因为在某些情况下，同一task可能在同一stage的两次不同尝试中并发运行。
   private case class TaskIdentifier(stageAttempt: Int, taskAttempt: Int)
-
+  // 缓存各个分区的任务尝试
   private case class StageState(numPartitions: Int) {
+    // 授权过的提交者
     val authorizedCommitters = Array.fill[TaskIdentifier](numPartitions)(null)
+    // 缓存失败的尝试
     val failures = mutable.Map[Int, mutable.Set[TaskIdentifier]]()
   }
 
   /**
-   * Map from active stages's id => authorized task attempts for each partition id, which hold an
-   * exclusive lock on committing task output for that partition, as well as any known failed
-   * attempts in the stage.
+   *  Map = Key: StageId , Value: StageState每个分区id的任务尝试，
+   * StageState在提交该分区的任务输出时持有一个独占锁，并且包含该stage中任何已知的失败尝试。
    *
-   * Entries are added to the top-level map when stages start and are removed they finish
-   * (either successfully or unsuccessfully).
+   * 当stage开始时添加到该map中，并在stage结束时删除条目(成功或不成功)。
    *
-   * Access to this map should be guarded by synchronizing on the OutputCommitCoordinator instance.
+   * 应该通过在OutputCommitCoordinator实例上同步来保护对该map的访问。
    */
   private val stageStates = mutable.Map[Int, StageState]()
 
@@ -80,11 +78,11 @@ private[spark] class OutputCommitCoordinator(conf: SparkConf, isDriver: Boolean)
   }
 
   /**
-   * Called by tasks to ask whether they can commit their output to HDFS.
+   * tasks询问是否可以将输出提交到HDFS
    *
-   * If a task attempt has been authorized to commit, then all other attempts to commit the same
-   * task will be denied.  If the authorized task attempt fails (e.g. due to its executor being
-   * lost), then a subsequent task attempt may be authorized to commit its output.
+   * 如果一个任务尝试已经被授权提交，那么所有其他提交同一任务的尝试都将被拒绝。
+   * 如果授权的任务尝试失败(例如，由于其执行器丢失)，
+   * 随后的任务尝试可能被授权提交其输出。
    *
    * @param stage the stage number
    * @param partition the partition number
@@ -100,7 +98,7 @@ private[spark] class OutputCommitCoordinator(conf: SparkConf, isDriver: Boolean)
     val msg = AskPermissionToCommitOutput(stage, stageAttempt, partition, attemptNumber)
     coordinatorRef match {
       case Some(endpointRef) =>
-        ThreadUtils.awaitResult(endpointRef.ask[Boolean](msg),
+        ThreadUtils.awaitResult(endpointRef.ask[Boolean](msg), // 向OutputCommitCoordinatorEndpoint询问是否能提交Stage的指定分区到HDFS
           RpcUtils.askRpcTimeout(conf).duration)
       case None =>
         logError(
@@ -177,11 +175,13 @@ private[spark] class OutputCommitCoordinator(conf: SparkConf, isDriver: Boolean)
       partition: Int,
       attemptNumber: Int): Boolean = synchronized {
     stageStates.get(stage) match {
+        // 是否已经存在失败列表中，拒绝
       case Some(state) if attemptFailed(state, stageAttempt, partition, attemptNumber) =>
         logInfo(s"Commit denied for stage=$stage.$stageAttempt, partition=$partition: " +
           s"task attempt $attemptNumber already marked as failed.")
         false
       case Some(state) =>
+        // 如果authorizedCommitters队列中不存在该分区的提交权限记录，则添加并返回true给予授权
         val existing = state.authorizedCommitters(partition)
         if (existing == null) {
           logDebug(s"Commit allowed for stage=$stage.$stageAttempt, partition=$partition, " +
@@ -189,6 +189,7 @@ private[spark] class OutputCommitCoordinator(conf: SparkConf, isDriver: Boolean)
           state.authorizedCommitters(partition) = TaskIdentifier(stageAttempt, attemptNumber)
           true
         } else {
+          // 否则返回false
           logDebug(s"Commit denied for stage=$stage.$stageAttempt, partition=$partition: " +
             s"already committed by $existing")
           false

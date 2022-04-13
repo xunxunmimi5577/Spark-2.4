@@ -364,12 +364,16 @@ object SparkEnv extends Logging {
       ms.start()
       ms
     }
-
+    // 创建输出提交协调器的实例
     val outputCommitCoordinator = mockOutputCommitCoordinator.getOrElse {
       new OutputCommitCoordinator(conf, isDriver)
     }
+    // 如果当前实例是Driver，则创建OutputCommitCoordinatorEndpoint，并注册到Dispatcher
+    // 如果当前实例是Executor，则从远端Driver实例的NettyRpcEnv的Dispatcher中查找OutputCommitCoordinatorEndpoint的引用
+    // 返回引用
     val outputCommitCoordinatorRef = registerOrLookupEndpoint("OutputCommitCoordinator",
       new OutputCommitCoordinatorEndpoint(rpcEnv, outputCommitCoordinator))
+    // 由输出提交协调器的coordinatorRef的属性持有该引用
     outputCommitCoordinator.coordinatorRef = Some(outputCommitCoordinatorRef)
 
     val envInstance = new SparkEnv(

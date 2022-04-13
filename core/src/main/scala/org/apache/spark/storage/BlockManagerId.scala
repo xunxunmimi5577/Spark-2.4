@@ -36,9 +36,9 @@ import org.apache.spark.util.Utils
  */
 @DeveloperApi
 class BlockManagerId private (
-    private var executorId_ : String,
-    private var host_ : String,
-    private var port_ : Int,
+    private var executorId_ : String, // 如果是Driver，那么ID为driver；否则由Master负责给各个Executor分配
+    private var host_ : String,  // 主机域名或者IP
+    private var port_ : Int,     // BlockTransferService对外服务的端口
     private var topologyInfo_ : Option[String])
   extends Externalizable {
 
@@ -68,7 +68,7 @@ class BlockManagerId private (
     executorId == SparkContext.DRIVER_IDENTIFIER ||
       executorId == SparkContext.LEGACY_DRIVER_IDENTIFIER
   }
-
+  // 将BlockManagerId的所有信息序列化后写到外部二进制流中
   override def writeExternal(out: ObjectOutput): Unit = Utils.tryOrIOException {
     out.writeUTF(executorId_)
     out.writeUTF(host_)
@@ -77,7 +77,7 @@ class BlockManagerId private (
     // we only write topologyInfo if we have it
     topologyInfo.foreach(out.writeUTF(_))
   }
-
+  // 从外部二进制流中读取BlockManagerId的所有信息
   override def readExternal(in: ObjectInput): Unit = Utils.tryOrIOException {
     executorId_ = in.readUTF()
     host_ = in.readUTF()

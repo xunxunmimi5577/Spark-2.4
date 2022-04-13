@@ -32,7 +32,7 @@ import org.apache.spark.SparkException
 private[spark] case class RpcEndpointAddress(rpcAddress: RpcAddress, name: String) {
 
   require(name != null, "RpcEndpoint name must be provided.")
-
+  // 远端RpcEnv的地址host+port，和远端endpoint的名称name
   def this(host: String, port: Int, name: String) = {
     this(RpcAddress(host, port), name)
   }

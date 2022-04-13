@@ -45,6 +45,7 @@ import org.apache.spark.internal.Logging
 private[storage] class BlockInfo(
     val level: StorageLevel,
     val classTag: ClassTag[_],
+    // BlockInfo所描述的Block是否需要告知Master
     val tellMaster: Boolean) {
 
   /**
@@ -58,7 +59,7 @@ private[storage] class BlockInfo(
   private[this] var _size: Long = 0
 
   /**
-   * The number of times that this block has been locked for reading.
+   * Block被锁定读取的次数
    */
   def readerCount: Int = _readerCount
   def readerCount_=(c: Int): Unit = {
@@ -68,9 +69,7 @@ private[storage] class BlockInfo(
   private[this] var _readerCount: Int = 0
 
   /**
-   * The task attempt id of the task which currently holds the write lock for this block, or
-   * [[BlockInfo.NON_TASK_WRITER]] if the write lock is held by non-task code, or
-   * [[BlockInfo.NO_WRITER]] if this block is not locked for writing.
+   * 任务尝试在对Block进行写操作前，首先必须获得对应BlockInfo的写锁。
    */
   def writerTask: Long = _writerTask
   def writerTask_=(t: Long): Unit = {
@@ -125,7 +124,7 @@ private[storage] class BlockInfoManager extends Logging {
   private[this] val infos = new mutable.HashMap[BlockId, BlockInfo]
 
   /**
-   * Tracks the set of blocks that each task has locked for writing.
+   * TaskAttemptId和写锁之间是一对多的关系，即每个任务尝试执行会获取零到多个Block的写锁，
    */
   @GuardedBy("this")
   private[this] val writeLocksByTask =
@@ -133,8 +132,8 @@ private[storage] class BlockInfoManager extends Logging {
       with mutable.MultiMap[TaskAttemptId, BlockId]
 
   /**
-   * Tracks the set of blocks that each task has locked for reading, along with the number of times
-   * that a block has been locked (since our read locks are re-entrant).
+   * TaskAttemptId和BlockId是一对多的关系，即每个任务尝试执行会获取零到多个Block的读锁，
+    * 并且会记录对于同一个Block的读锁的占用次数
    */
   @GuardedBy("this")
   private[this] val readLocksByTask =
@@ -148,8 +147,9 @@ private[storage] class BlockInfoManager extends Logging {
   // ----------------------------------------------------------------------------------------------
 
   /**
-   * Called at the start of a task in order to register that task with this [[BlockInfoManager]].
-   * This must be called prior to calling any other BlockInfoManager methods from that task.
+    * 注册TaskAttemptId
+   *  在task开始前调用
+   *  这方法必须在调用任何其他blockinfemanager方法之前调用。
    */
   def registerTask(taskAttemptId: TaskAttemptId): Unit = synchronized {
     require(!readLocksByTask.contains(taskAttemptId),
@@ -158,8 +158,8 @@ private[storage] class BlockInfoManager extends Logging {
   }
 
   /**
-   * Returns the current task's task attempt id (which uniquely identifies the task), or
-   * [[BlockInfo.NON_TASK_WRITER]] if called by a non-task thread.
+   * 获取任何上下文TaskContext中当前正在执行的任务尝试的TaskAttemptId
+   * 如果TaskContext中没有任务尝试的TaskAttemptId，返回 BlockInfo.NON_TASK_WRITER
    */
   private def currentTaskAttemptId: TaskAttemptId = {
     Option(TaskContext.get()).map(_.taskAttemptId()).getOrElse(BlockInfo.NON_TASK_WRITER)
@@ -188,10 +188,10 @@ private[storage] class BlockInfoManager extends Logging {
       blocking: Boolean = true): Option[BlockInfo] = synchronized {
     logTrace(s"Task $currentTaskAttemptId trying to acquire read lock for $blockId")
     do {
-      infos.get(blockId) match {
+      infos.get(blockId) match {  // 获取BlockId对应的BlockInfo
         case None => return None
         case Some(info) =>
-          if (info.writerTask == BlockInfo.NO_WRITER) {
+          if (info.writerTask == BlockInfo.NO_WRITER) { // 如果当前Block没有被写锁锁定，由当前任务尝试线程持有读锁并返回BlockInfo
             info.readerCount += 1
             readLocksByTask(currentTaskAttemptId).add(blockId)
             logTrace(s"Task $currentTaskAttemptId acquired read lock for $blockId")
@@ -199,7 +199,7 @@ private[storage] class BlockInfoManager extends Logging {
           }
       }
       if (blocking) {
-        wait()
+        wait()  // 等待占用写锁的任务尝试线程释放Block的写锁后唤醒当前线程
       }
     } while (blocking)
     None
@@ -222,18 +222,19 @@ private[storage] class BlockInfoManager extends Logging {
       blocking: Boolean = true): Option[BlockInfo] = synchronized {
     logTrace(s"Task $currentTaskAttemptId trying to acquire write lock for $blockId")
     do {
-      infos.get(blockId) match {
+      infos.get(blockId) match {  // 获取BlockId对应的BlockInfo
         case None => return None
         case Some(info) =>
+          // 如果当前Block的写锁没有被其他线程占用，且没有线程正在读取此Block
           if (info.writerTask == BlockInfo.NO_WRITER && info.readerCount == 0) {
-            info.writerTask = currentTaskAttemptId
+            info.writerTask = currentTaskAttemptId  // 由当前任务尝试线程持有写锁
             writeLocksByTask.addBinding(currentTaskAttemptId, blockId)
             logTrace(s"Task $currentTaskAttemptId acquired write lock for $blockId")
             return Some(info)
           }
       }
       if (blocking) {
-        wait()
+        wait()  // 等待占用写锁的线程释放Block的写锁后唤醒当前线程
       }
     } while (blocking)
     None
@@ -270,12 +271,12 @@ private[storage] class BlockInfoManager extends Logging {
    */
   def downgradeLock(blockId: BlockId): Unit = synchronized {
     logTrace(s"Task $currentTaskAttemptId downgrading write lock for $blockId")
-    val info = get(blockId).get
+    val info = get(blockId).get  // 获取BlockId对应的BlockInfo
     require(info.writerTask == currentTaskAttemptId,
       s"Task $currentTaskAttemptId tried to downgrade a write lock that it does not hold on" +
         s" block $blockId")
-    unlock(blockId)
-    val lockOutcome = lockForReading(blockId, blocking = false)
+    unlock(blockId)  // 释放Block的写锁
+    val lockOutcome = lockForReading(blockId, blocking = false)  // 获取Block的读锁
     assert(lockOutcome.isDefined)
   }
 
@@ -289,13 +290,13 @@ private[storage] class BlockInfoManager extends Logging {
   def unlock(blockId: BlockId, taskAttemptId: Option[TaskAttemptId] = None): Unit = synchronized {
     val taskId = taskAttemptId.getOrElse(currentTaskAttemptId)
     logTrace(s"Task $taskId releasing lock for $blockId")
-    val info = get(blockId).getOrElse {
+    val info = get(blockId).getOrElse {   // 获取BlockId对应的BlockInfo
       throw new IllegalStateException(s"Block $blockId not found")
     }
     if (info.writerTask != BlockInfo.NO_WRITER) {
-      info.writerTask = BlockInfo.NO_WRITER
+      info.writerTask = BlockInfo.NO_WRITER    // 释放当前Block的写锁
       writeLocksByTask.removeBinding(taskId, blockId)
-    } else {
+    } else {   // 释放当前Block的读锁
       assert(info.readerCount > 0, s"Block $blockId is not locked for reading")
       info.readerCount -= 1
       val countsForTask = readLocksByTask(taskId)
@@ -321,15 +322,15 @@ private[storage] class BlockInfoManager extends Logging {
       blockId: BlockId,
       newBlockInfo: BlockInfo): Boolean = synchronized {
     logTrace(s"Task $currentTaskAttemptId trying to put $blockId")
-    lockForReading(blockId) match {
+    lockForReading(blockId) match {  // 获取BlockI对应的Block的读锁
       case Some(info) =>
-        // Block already exists. This could happen if another thread races with us to compute
-        // the same block. In this case, just keep the read lock and return.
+        // lockForReading方法如果是返回一个BlockInfo，Block已经存在，且没有写锁占用
+        // 这种情况发生在多线程在写同一个Block时产生竞争
         false
       case None =>
         // Block does not yet exist or is removed, so we are free to acquire the write lock
         infos(blockId) = newBlockInfo
-        lockForWriting(blockId)
+        lockForWriting(blockId)    // 获取Block的写锁
         true
     }
   }
@@ -411,12 +412,12 @@ private[storage] class BlockInfoManager extends Logging {
    */
   def removeBlock(blockId: BlockId): Unit = synchronized {
     logTrace(s"Task $currentTaskAttemptId trying to remove block $blockId")
-    infos.get(blockId) match {
+    infos.get(blockId) match {  // 获取BlockId对应的BlockInfo
       case Some(blockInfo) =>
-        if (blockInfo.writerTask != currentTaskAttemptId) {
+        if (blockInfo.writerTask != currentTaskAttemptId) {   // 如果对BlockInfo正在写入的线程是当前线程的话，当前线程才有权力移除BlockInfo
           throw new IllegalStateException(
             s"Task $currentTaskAttemptId called remove() on block $blockId without a write lock")
-        } else {
+        } else {  // 移除BlockInfo
           infos.remove(blockId)
           blockInfo.readerCount = 0
           blockInfo.writerTask = BlockInfo.NO_WRITER
@@ -426,7 +427,7 @@ private[storage] class BlockInfoManager extends Logging {
         throw new IllegalArgumentException(
           s"Task $currentTaskAttemptId called remove() on non-existent block $blockId")
     }
-    notifyAll()
+    notifyAll()  // 通知所有在该Block的锁上等待的线程
   }
 
   /**

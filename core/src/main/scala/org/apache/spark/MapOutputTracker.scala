@@ -224,11 +224,12 @@ private[spark] class MapOutputTrackerMasterEndpoint(
   logDebug("init") // force eager creation of logger
 
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
+    // 获取map中间输出状态
     case GetMapOutputStatuses(shuffleId: Int) =>
       val hostPort = context.senderAddress.hostPort
       logInfo("Asked to send map output locations for shuffle " + shuffleId + " to " + hostPort)
       val mapOutputStatuses = tracker.post(new GetMapOutputMessage(shuffleId, context))
-
+    // 停止map中间输出状态的跟踪
     case StopMapOutputTracker =>
       logInfo("MapOutputTrackerMasterEndpoint stopped!")
       context.reply(true)
@@ -308,11 +309,9 @@ private[spark] abstract class MapOutputTracker(conf: SparkConf) extends Logging 
 
 /**
  *  在Driver侧，跟踪stage的map输出结果位置
- * The DAGScheduler uses this class to (de)register map output statuses and to look up statistics
- * for performing locality-aware reduce task scheduling.
+ *  DAGScheduler使用这个类来(取消)注册映射输出状态，并查询统计信息，使reduce任务的调度能够遵循机架感知。
  *
- * ShuffleMapStage uses this class for tracking available / missing outputs in order to determine
- * which tasks need to be run.
+ * ShuffleMapStage使用这个类来跟踪可用的或者丢失了的map输出，以确定需要运行哪些任务。
  */
 private[spark] class MapOutputTrackerMaster(
     conf: SparkConf,
@@ -320,11 +319,11 @@ private[spark] class MapOutputTrackerMaster(
     isLocal: Boolean)
   extends MapOutputTracker(conf) {
 
-  // The size at which we use Broadcast to send the map output statuses to the executors
+  // 用于广播的最小大小
   private val minSizeForBroadcast =
     conf.getSizeAsBytes("spark.shuffle.mapOutput.minSizeForBroadcast", "512k").toInt
 
-  /** Whether to compute locality preferences for reduce tasks */
+/** 是否为reduce任务计算本地性的偏好 */
   private val shuffleLocalityEnabled = conf.getBoolean("spark.shuffle.reduceLocality.enabled", true)
 
   // Number of map and reduce tasks above which we do not assign preferred locations based on map
@@ -346,15 +345,16 @@ private[spark] class MapOutputTrackerMaster(
 
   private val maxRpcMessageSize = RpcUtils.maxMessageSizeBytes(conf)
 
-  // requests for map output statuses
+  // 获取map输出状态的请求队列
   private val mapOutputRequests = new LinkedBlockingQueue[GetMapOutputMessage]
 
-  // Thread pool used for handling map output status requests. This is a separate thread pool
-  // to ensure we don't block the normal dispatcher threads.
+// 用于获取map输出的固定大小的线程池
+  // 这是一个独立的线程池，以确保我们不会阻塞正常的调度程序线程。
   private val threadpool: ThreadPoolExecutor = {
     val numThreads = conf.getInt("spark.shuffle.mapOutput.dispatcher.numThreads", 8)
     val pool = ThreadUtils.newDaemonFixedThreadPool(numThreads, "map-output-dispatcher")
     for (i <- 0 until numThreads) {
+      // 可以看到线程池执行的任务都是MessageLoop
       pool.execute(new MessageLoop)
     }
     pool
@@ -380,9 +380,10 @@ private[spark] class MapOutputTrackerMaster(
       try {
         while (true) {
           try {
+            // 从队列中拿出获取map输出的请求，这个请求体是一个样例类，包含shuffleId和RpcCallContext（用于回复客户端）两个属性
             val data = mapOutputRequests.take()
              if (data == PoisonPill) {
-              // Put PoisonPill back so that other MessageLoops can see it.
+              // 放回PoisonPill ，这样其他MessageLoops也能“中毒”
               mapOutputRequests.offer(PoisonPill)
               return
             }
@@ -391,7 +392,9 @@ private[spark] class MapOutputTrackerMaster(
             val hostPort = context.senderAddress.hostPort
             logDebug("Handling request to send map output locations for shuffle " + shuffleId +
               " to " + hostPort)
+            // 获取shuffle任务状态信息
             val shuffleStatus = shuffleStatuses.get(shuffleId).head
+            // 将序列化的shuffle任务状态信息序列化后回复给客户端，即executor
             context.reply(
               shuffleStatus.serializedMapStatus(broadcastManager, isLocal, minSizeForBroadcast))
           } catch {
@@ -516,7 +519,7 @@ private[spark] class MapOutputTrackerMaster(
   }
 
   /**
-   * Return statistics about all of the outputs for a given shuffle.
+   * 用于获取shuffle依赖的各个map输出Block大小的统计信息
    */
   def getStatistics(dep: ShuffleDependency[_, _, _]): MapOutputStatistics = {
     shuffleStatuses(dep.shuffleId).withMapStatuses { statuses =>
@@ -764,10 +767,8 @@ private[spark] class MapOutputTrackerWorker(conf: SparkConf) extends MapOutputTr
     mapStatuses.remove(shuffleId)
   }
 
-  /**
-   * Called from executors to update the epoch number, potentially clearing old outputs
-   * because of a fetch failure. Each executor task calls this with the latest epoch
-   * number on the driver at the time it was created.
+/**
+   * 当Executor运行出现故障时，Master会再分配其他Executor运行任务，此时会调用updateEpoch方法更新epoch，并且清空mapStatuses
    */
   def updateEpoch(newEpoch: Long): Unit = {
     epochLock.synchronized {

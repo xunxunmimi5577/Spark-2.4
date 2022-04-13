@@ -56,11 +56,12 @@ import org.apache.spark.unsafe.Platform
 import org.apache.spark.util._
 import org.apache.spark.util.io.ChunkedByteBuffer
 
-/* Class for returning a fetched block and associated metrics. */
+/* 用于封装从本地的BlockManager中获取的Block数据及与Block相关联的度量数据 */
 private[spark] class BlockResult(
-    val data: Iterator[Any],
+    val data: Iterator[Any],  // Block及与Block相关联的度量数据
+    // 读取Block的方法，DataReadMethod提供的Memory、Disk、Hadoop、Network四个枚举值
     val readMethod: DataReadMethod.Value,
-    val bytes: Long)
+    val bytes: Long)  // 读取的Block的字节长度
 
 /**
  * Abstracts away how blocks are stored and provides different ways to read the underlying block

@@ -37,11 +37,12 @@ import org.apache.spark.util.Utils
  */
 @DeveloperApi
 class StorageLevel private(
-    private var _useDisk: Boolean,
-    private var _useMemory: Boolean,
-    private var _useOffHeap: Boolean,
+    private var _useDisk: Boolean,  // 能否允许Block写入磁盘
+    private var _useMemory: Boolean, // 能否允许Block写入堆内存
+    private var _useOffHeap: Boolean, // 能否允许Block写入堆外内存
+    // 是否需要对Block反序列化，当Block本身经过了序列化后，Block的StorageLevel中的该属性将被设为true
     private var _deserialized: Boolean,
-    private var _replication: Int = 1)
+    private var _replication: Int = 1)   // Block的副本数，默认为1；当值大于1时，会复制到其他节点的存储体系中写入
   extends Externalizable {
 
   // TODO: Also add fields for caching priority, dataset ID, and flushing.
@@ -62,7 +63,7 @@ class StorageLevel private(
   if (useOffHeap) {
     require(!deserialized, "Off-heap storage level does not support deserialized storage")
   }
-
+  // 堆内堆外的存储
   private[spark] def memoryMode: MemoryMode = {
     if (useOffHeap) MemoryMode.OFF_HEAP
     else MemoryMode.ON_HEAP
@@ -85,6 +86,13 @@ class StorageLevel private(
 
   def isValid: Boolean = (useMemory || useDisk) && (replication > 0)
 
+  /**
+    * 该方法就是将StorageLevel的四个属性设置到四位数字的各个状态位
+    * 例如 1000 表示允许写入磁盘
+    *      1100 表示允许写入磁盘和堆内存
+    *      1111 表示存储级别为允许写入磁盘、堆内存及堆外内存，并且需要反序列
+    * @return
+    */
   def toInt: Int = {
     var ret = 0
     if (_useDisk) {
@@ -102,11 +110,13 @@ class StorageLevel private(
     ret
   }
 
+  // 将StorageLevel首先通过toInt方法将_useDisk、_useMemory、_useOffHeap、_deserialized四个属性设置到四位数的状态位
+  // 然后与_replication一起被序列化写入外部二进制流
   override def writeExternal(out: ObjectOutput): Unit = Utils.tryOrIOException {
     out.writeByte(toInt)
     out.writeByte(_replication)
   }
-
+  // 从外部二进制流中读取StorageLevel的各个属性
   override def readExternal(in: ObjectInput): Unit = Utils.tryOrIOException {
     val flags = in.readByte()
     _useDisk = (flags & 8) != 0
