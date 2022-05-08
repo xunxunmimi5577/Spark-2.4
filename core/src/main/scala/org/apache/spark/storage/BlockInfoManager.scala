@@ -322,10 +322,10 @@ private[storage] class BlockInfoManager extends Logging {
       blockId: BlockId,
       newBlockInfo: BlockInfo): Boolean = synchronized {
     logTrace(s"Task $currentTaskAttemptId trying to put $blockId")
-    lockForReading(blockId) match {  // 获取BlockI对应的Block的读锁
+    lockForReading(blockId) match {  // 先获取BlockI对应的Block的读锁，尝试获取Block的信息
       case Some(info) =>
-        // lockForReading方法如果是返回一个BlockInfo，Block已经存在，且没有写锁占用
-        // 这种情况发生在多线程在写同一个Block时产生竞争
+        // 如果成功读取到BlockInfo，说明Block已经存在，且没有写锁占用
+        // 这种情况发生在多线程在写同一个Block时产生竞争，这个Block已经被别的线程写完了
         false
       case None =>
         // Block does not yet exist or is removed, so we are free to acquire the write lock

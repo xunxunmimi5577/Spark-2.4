@@ -44,9 +44,13 @@ private[spark] class DiskStore(
     conf: SparkConf,
     diskManager: DiskBlockManager,
     securityManager: SecurityManager) extends Logging {
-
+  // 如果文件大小小于这个值，直接读取，否则通过FileChannel的内存镜像映射方法读取
+  // 内存镜像映射方法：Java NIO中，FileChannel的map方法所提供的快速读写技术
+  // 其实质上是将通道所连接的数据节点中的全部或部分数据直接映射到内存的一个Buffer中，
+  // 这个内存Buffer块就是节点数据的映像，直接对这个Buffer进行修改，会影响到节点数据
   private val minMemoryMapBytes = conf.getSizeAsBytes("spark.storage.memoryMapThreshold", "2m")
   private val maxMemoryMapBytes = conf.get(config.MEMORY_MAP_LIMIT_FOR_TESTS)
+  // 记录每个block的大小
   private val blockSizes = new ConcurrentHashMap[BlockId, Long]()
 
   def getSize(blockId: BlockId): Long = blockSizes.get(blockId)
@@ -57,16 +61,16 @@ private[spark] class DiskStore(
    * @throws IllegalStateException if the block already exists in the disk store.
    */
   def put(blockId: BlockId)(writeFunc: WritableByteChannel => Unit): Unit = {
-    if (contains(blockId)) {
+    if (contains(blockId)) {  // 判断blockId对应的Block是否已经写入
       throw new IllegalStateException(s"Block $blockId is already present in the disk store")
     }
     logDebug(s"Attempting to put block $blockId")
     val startTime = System.currentTimeMillis
-    val file = diskManager.getFile(blockId)
-    val out = new CountingWritableChannel(openForWrite(file))
+    val file = diskManager.getFile(blockId)  // 获取blockId对应的block文件
+    val out = new CountingWritableChannel(openForWrite(file))  // 打开文件的输出流
     var threwException: Boolean = true
     try {
-      writeFunc(out)
+      writeFunc(out) // 写入Block文件
       blockSizes.put(blockId, out.getCount)
       threwException = false
     } finally {
@@ -80,7 +84,7 @@ private[spark] class DiskStore(
           }
       } finally {
          if (threwException) {
-          remove(blockId)
+          remove(blockId) // 如果写入失败，还需要调用remove方法删除BlockId对应的Block文件
         }
       }
     }
@@ -91,6 +95,7 @@ private[spark] class DiskStore(
       finishTime - startTime))
   }
 
+  // 将BlockId对应的Block写入磁盘，这种方式的Block中的内容已经被封装成ChunkedByteBuffer
   def putBytes(blockId: BlockId, bytes: ChunkedByteBuffer): Unit = {
     put(blockId) { channel =>
       bytes.writeFully(channel)
@@ -126,6 +131,7 @@ private[spark] class DiskStore(
     }
   }
 
+  // 判断存储blockId对应的block文件是否存在
   def contains(blockId: BlockId): Boolean = {
     val file = diskManager.getFile(blockId.name)
     file.exists()

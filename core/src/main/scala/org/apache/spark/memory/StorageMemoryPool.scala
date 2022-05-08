@@ -35,6 +35,7 @@ private[memory] class StorageMemoryPool(
     memoryMode: MemoryMode
   ) extends MemoryPool(lock) with Logging {
 
+  // 内存池的名称，根据MemoryMode匹配
   private[this] val poolName: String = memoryMode match {
     case MemoryMode.ON_HEAP => "on-heap storage"
     case MemoryMode.OFF_HEAP => "off-heap storage"
@@ -64,12 +65,13 @@ private[memory] class StorageMemoryPool(
   }
 
   /**
-   * Acquire N bytes of memory to cache the given block, evicting existing ones if necessary.
+   * 获取numBytes个字节的内存来空间用于缓存给定的block，如果需要的话，移除现有的块。
    *
    * @return whether all N bytes were successfully granted.
    */
   def acquireMemory(blockId: BlockId, numBytes: Long): Boolean = lock.synchronized {
     val numBytesToFree = math.max(0, numBytes - memoryFree)
+    // 调用重载方法
     acquireMemory(blockId, numBytes, numBytesToFree)
   }
 
@@ -88,19 +90,21 @@ private[memory] class StorageMemoryPool(
     assert(numBytesToAcquire >= 0)
     assert(numBytesToFree >= 0)
     assert(memoryUsed <= poolSize)
-    if (numBytesToFree > 0) {
+    if (numBytesToFree > 0) {   // 需要腾出numBytesToFree大小的空间
       memoryStore.evictBlocksToFreeSpace(Some(blockId), numBytesToFree, memoryMode)
     }
     // NOTE: If the memory store evicts blocks, then those evictions will synchronously call
     // back into this StorageMemoryPool in order to free memory. Therefore, these variables
     // should have been updated.
-    val enoughMemory = numBytesToAcquire <= memoryFree
+    val enoughMemory = numBytesToAcquire <= memoryFree   // 判断内存是否充足
     if (enoughMemory) {
+      // 空间充足，则内存使用值加上请求值
       _memoryUsed += numBytesToAcquire
     }
     enoughMemory
   }
 
+  // 释放size大小的内存
   def releaseMemory(size: Long): Unit = lock.synchronized {
     if (size > _memoryUsed) {
       logWarning(s"Attempted to release $size bytes of storage " +

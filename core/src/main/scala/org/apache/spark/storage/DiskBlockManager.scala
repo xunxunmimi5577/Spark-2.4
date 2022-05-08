@@ -58,13 +58,14 @@ private[spark] class DiskBlockManager(conf: SparkConf, deleteFilesOnStop: Boolea
   // This method should be kept in sync with
   // org.apache.spark.network.shuffle.ExternalShuffleBlockResolver#getFile().
   def getFile(filename: String): File = {
-    // Figure out which local directory it hashes to, and which subdirectory in that
-    val hash = Utils.nonNegativeHash(filename)
-    val dirId = hash % localDirs.length
+    // 找出它的哈希值指向哪个本地目录，以及其中的子目录
+    val hash = Utils.nonNegativeHash(filename)  // 获取文件名的非负哈希值
+    val dirId = hash % localDirs.length      // 按照取余方式获得选中的一级目录
+    // 获得的余数作为选中的二级目录
     val subDirId = (hash / localDirs.length) % subDirsPerLocalDir
 
     // Create the subdirectory if it doesn't already exist
-    val subDir = subDirs(dirId).synchronized {
+    val subDir = subDirs(dirId).synchronized {  // 获取或创建二级目录
       val old = subDirs(dirId)(subDirId)
       if (old != null) {
         old
@@ -78,17 +79,17 @@ private[spark] class DiskBlockManager(conf: SparkConf, deleteFilesOnStop: Boolea
       }
     }
 
-    new File(subDir, filename)
+    new File(subDir, filename)  // 创建或返回二级目录下的文件
   }
 
-  def getFile(blockId: BlockId): File = getFile(blockId.name)
+  def getFile(blockId: BlockId): File = getFile(blockId.name)  // 获取blockId对应的文件
 
   /** Check if disk block manager has a block. */
   def containsBlock(blockId: BlockId): Boolean = {
     getFile(blockId.name).exists()
   }
 
-  /** List all the files currently stored on disk by the disk manager. */
+  /** 获取本地localDirs目录中的所有文件，为了线程安全，采用同步+克隆的方式 */
   def getAllFiles(): Seq[File] = {
     // Get all the files inside the array of array of directories
     subDirs.flatMap { dir =>
@@ -102,7 +103,7 @@ private[spark] class DiskBlockManager(conf: SparkConf, deleteFilesOnStop: Boolea
     }
   }
 
-  /** List all the blocks currently stored on disk by the disk manager. */
+  /** 列出磁盘管理器当前存储在磁盘上的所有BlockId */
   def getAllBlocks(): Seq[BlockId] = {
     getAllFiles().flatMap { f =>
       try {
@@ -116,7 +117,7 @@ private[spark] class DiskBlockManager(conf: SparkConf, deleteFilesOnStop: Boolea
     }
   }
 
-  /** Produces a unique block id and File suitable for storing local intermediate results. */
+  /** 生成一个唯一的blockId和文件，用于存储本地Block。 */
   def createTempLocalBlock(): (TempLocalBlockId, File) = {
     var blockId = new TempLocalBlockId(UUID.randomUUID())
     while (getFile(blockId).exists()) {
@@ -125,7 +126,7 @@ private[spark] class DiskBlockManager(conf: SparkConf, deleteFilesOnStop: Boolea
     (blockId, getFile(blockId))
   }
 
-  /** Produces a unique block id and File suitable for storing shuffled intermediate results. */
+  /** 此方法用于创建唯一的BlockId和文件，用于存储Shuffle中间结果 */
   def createTempShuffleBlock(): (TempShuffleBlockId, File) = {
     var blockId = new TempShuffleBlockId(UUID.randomUUID())
     while (getFile(blockId).exists()) {
@@ -174,6 +175,9 @@ private[spark] class DiskBlockManager(conf: SparkConf, deleteFilesOnStop: Boolea
     doStop()
   }
 
+  /**
+    * doStop的主要逻辑是遍历localDirs数组中的一级目录，递归删除一级目录及其子目录或子文件
+    */
   private def doStop(): Unit = {
     if (deleteFilesOnStop) {
       localDirs.foreach { localDir =>

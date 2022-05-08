@@ -152,6 +152,7 @@ private[spark] class UnifiedMemoryManager private[memory] (
       memoryMode: MemoryMode): Boolean = synchronized {
     assertInvariants()
     assert(numBytes >= 0)
+    // 根据内存模型获取对应的计算内存池、存储内存池和可以存储的最大空间
     val (executionPool, storagePool, maxMemory) = memoryMode match {
       case MemoryMode.ON_HEAP => (
         onHeapExecutionMemoryPool,
@@ -168,7 +169,7 @@ private[spark] class UnifiedMemoryManager private[memory] (
         s"memory limit ($maxMemory bytes)")
       return false
     }
-    if (numBytes > storagePool.memoryFree) {
+    if (numBytes > storagePool.memoryFree) {  // 当存储空间不足，会向计算内存池借用
       // There is not enough free memory in the storage pool, so try to borrow free memory from
       // the execution pool.
       val memoryBorrowedFromExecution = Math.min(executionPool.memoryFree,
@@ -176,10 +177,10 @@ private[spark] class UnifiedMemoryManager private[memory] (
       executionPool.decrementPoolSize(memoryBorrowedFromExecution)
       storagePool.incrementPoolSize(memoryBorrowedFromExecution)
     }
-    storagePool.acquireMemory(blockId, numBytes)
+    storagePool.acquireMemory(blockId, numBytes)  // 从存储内存池获得存储BlockId对应的Block所需的空间
   }
-
-  override def acquireUnrollMemory(
+  // unroll是从迭代器拿取到内存中的过程，
+  override def acquireUnrollMemory(  // 这个方法实际上就是调用了acquireStorageMemory方法
       blockId: BlockId,
       numBytes: Long,
       memoryMode: MemoryMode): Boolean = synchronized {
