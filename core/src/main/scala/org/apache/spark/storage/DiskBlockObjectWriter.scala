@@ -107,7 +107,7 @@ private[spark] class DiskBlockObjectWriter(
       extends BufferedOutputStream(ts, bufferSize) with ManualCloseOutputStream
     mcs = new ManualCloseBufferedOutputStream
   }
-
+  // 打开要写入文件的各种输出流和管道
   def open(): DiskBlockObjectWriter = {
     if (hasBeenClosed) {
       throw new IllegalStateException("Writer already closed. Cannot be reopened.")
@@ -161,7 +161,9 @@ private[spark] class DiskBlockObjectWriter(
   /**
    * Flush the partial writes and commit them as a single atomic block.
    * A commit may write additional bytes to frame the atomic block.
-   *
+    *
+   * 将输出流中的数据写入到磁盘，并返回FileSegment，包含文件、写入起始偏移量、写入的长度等信息
+    *
    * @return file segment with previous offset and length committed on this call.
    */
   def commitAndGet(): FileSegment = {
@@ -243,7 +245,7 @@ private[spark] class DiskBlockObjectWriter(
   }
 
   override def write(b: Int): Unit = throw new UnsupportedOperationException()
-
+  // 向输出流中写入键值对
   override def write(kvBytes: Array[Byte], offs: Int, len: Int): Unit = {
     if (!streamOpen) {
       open()
@@ -254,6 +256,7 @@ private[spark] class DiskBlockObjectWriter(
 
   /**
    * Notify the writer that a record worth of bytes has been written with OutputStream#write.
+    * 对写入的记录数进行统计和度量
    */
   def recordWritten(): Unit = {
     numRecordsWritten += 1
