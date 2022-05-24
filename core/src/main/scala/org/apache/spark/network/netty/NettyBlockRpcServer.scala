@@ -55,16 +55,19 @@ class NettyBlockRpcServer(
     logTrace(s"Received request: $message")
 
     message match {
-      case openBlocks: OpenBlocks =>
+      case openBlocks: OpenBlocks =>  // 读取Block
         val blocksNum = openBlocks.blockIds.length
+        // 调用BlockManager的getBlockData方法获取数组中每个BlockId对应的Block（返回ManagedBuffer的序列）
         val blocks = for (i <- (0 until blocksNum).view)
           yield blockManager.getBlockData(BlockId.apply(openBlocks.blockIds(i)))
+        // 将ManagedBuffer序列注册到OneForOneStreamManager的streams中
         val streamId = streamManager.registerStream(appId, blocks.iterator.asJava,
           client.getChannel)
         logTrace(s"Registered streamId $streamId with $blocksNum buffers")
+        // 响应客户端
         responseContext.onSuccess(new StreamHandle(streamId, blocksNum).toByteBuffer)
 
-      case uploadBlock: UploadBlock =>
+      case uploadBlock: UploadBlock =>   // 上传Block
         // StorageLevel and ClassTag are serialized as bytes using our JavaSerializer.
         val (level: StorageLevel, classTag: ClassTag[_]) = {
           serializer
@@ -72,10 +75,13 @@ class NettyBlockRpcServer(
             .deserialize(ByteBuffer.wrap(uploadBlock.metadata))
             .asInstanceOf[(StorageLevel, ClassTag[_])]
         }
+        // 数据封装成NioManagedBuffer
         val data = new NioManagedBuffer(ByteBuffer.wrap(uploadBlock.blockData))
+        // 获取消息携带的BlockId
         val blockId = BlockId(uploadBlock.blockId)
         logDebug(s"Receiving replicated block $blockId with level ${level} " +
           s"from ${client.getSocketAddress}")
+        // 将Block存入本地存储系统
         blockManager.putBlockData(blockId, data, level, classTag)
         responseContext.onSuccess(ByteBuffer.allocate(0))
     }

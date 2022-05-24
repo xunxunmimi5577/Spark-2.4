@@ -46,15 +46,24 @@ import org.apache.spark.network.util.TransportConf;
  */
 public class OneForOneBlockFetcher {
   private static final Logger logger = LoggerFactory.getLogger(OneForOneBlockFetcher.class);
-
+  // 用于向服务端发送请求的TransportClient
   private final TransportClient client;
+  // 将携带远端节点的appId、execId和blockIds，表示从远端的哪个实例获取哪些Block，并且知道是哪个Executor生成的Block
   private final OpenBlocks openMessage;
+  // 与openMessage的blockIds属性一致
   private final String[] blockIds;
   private final BlockFetchingListener listener;
+  // 获取块成功或失败时调用，配合BlockFetchingListener使用
   private final ChunkReceivedCallback chunkCallback;
   private final TransportConf transportConf;
   private final DownloadFileManager downloadFileManager;
-
+/**
+ * 客户端给服务端发送OpenBlocks消息后
+ * 1. 服务端会在OneForOneStreamManager的streams缓存中缓存从存储体系中读取到的ManagerBuffer序列，
+ * 2. 并生成对应的streamId，
+ * 3. 然后将streamId和ManagedBuffer序列的大小封装为StreamHandler消息返回给客户端
+ * 以下客户端的streamHandle属性就是持有此StreamHandle消息
+ */
   private StreamHandle streamHandle = null;
 
   public OneForOneBlockFetcher(
@@ -109,17 +118,19 @@ public class OneForOneBlockFetcher {
     if (blockIds.length == 0) {
       throw new IllegalArgumentException("Zero-sized blockIds array");
     }
-
+    // 调用TransportClient的sendRpc方法发送openMessage（即OpenBlocks）消息
+    // 同时实现了一个匿名回调函数，sendRpc方法会将它缓存到客户端的outstandingRpcs中
     client.sendRpc(openMessage.toByteBuffer(), new RpcResponseCallback() {
       @Override
-      public void onSuccess(ByteBuffer response) {
+      public void onSuccess(ByteBuffer response) {  // 收到服务端代表成功的响应
         try {
+            // 将response反序列化StreamHandle类型
           streamHandle = (StreamHandle) BlockTransferMessage.Decoder.fromByteBuffer(response);
           logger.trace("Successfully opened blocks {}, preparing to fetch chunks.", streamHandle);
 
           // Immediately request all chunks -- we expect that the total size of the request is
           // reasonable due to higher level chunking in [[ShuffleBlockFetcherIterator]].
-          for (int i = 0; i < streamHandle.numChunks; i++) {
+          for (int i = 0; i < streamHandle.numChunks; i++) {  // 获得需要获取的chunk数量，然后遍历
             if (downloadFileManager != null) {
               client.stream(OneForOneStreamManager.genStreamChunkId(streamHandle.streamId, i),
                 new DownloadCallback(i));

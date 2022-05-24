@@ -109,6 +109,7 @@ private[spark] class NettyBlockTransferService(
       tempFileManager: DownloadFileManager): Unit = {
     logTrace(s"Fetch blocks from $host:$port (executor id $execId)")
     try {
+      // 创建RetryingBlockFetcher.BlockFetchStarter的匿名实现类的实例
       val blockFetchStarter = new RetryingBlockFetcher.BlockFetchStarter {
         override def createAndStart(blockIds: Array[String], listener: BlockFetchingListener) {
           val client = clientFactory.createClient(host, port)
@@ -116,11 +117,12 @@ private[spark] class NettyBlockTransferService(
             transportConf, tempFileManager).start()
         }
       }
-
+      // 获取spark.$module.io.maxRetries，获取block请求的重试次数
       val maxRetries = transportConf.maxIORetries()
       if (maxRetries > 0) {
         // Note this Fetcher will correctly handle maxRetries == 0; we avoid it just in case there's
         // a bug in this code. We should remove the if statement once we're sure of the stability.
+        // 这里传入了上面创建的BlockFetchStarter实例，实际还是调用blockFetchStarter.createAndStart方法
         new RetryingBlockFetcher(transportConf, blockFetchStarter, blockIds, listener).start()
       } else {
         blockFetchStarter.createAndStart(blockIds, listener)
@@ -142,13 +144,16 @@ private[spark] class NettyBlockTransferService(
       blockData: ManagedBuffer,
       level: StorageLevel,
       classTag: ClassTag[_]): Future[Unit] = {
+    // 创建一个空的Promise，调用方将持有此Promise的Future
     val result = Promise[Unit]()
+    // 创建TransportClient
     val client = clientFactory.createClient(hostname, port)
 
     // StorageLevel and ClassTag are serialized as bytes using our JavaSerializer.
     // Everything else is encoded using our binary protocol.
+    // 将存储级别StorageLevel和类型标记classTag等元数据序列化
     val metadata = JavaUtils.bufferToArray(serializer.newInstance().serialize((level, classTag)))
-
+    // 判断数据是否要序列化
     val asStream = blockData.size() > conf.get(config.MAX_REMOTE_BLOCK_SIZE_FETCH_TO_MEM)
     val callback = new RpcResponseCallback {
       override def onSuccess(response: ByteBuffer): Unit = {
@@ -162,12 +167,14 @@ private[spark] class NettyBlockTransferService(
       }
     }
     if (asStream) {
+      // 序列化后，将数据转换成ByteBuffer类型
       val streamHeader = new UploadBlockStream(blockId.name, metadata).toByteBuffer
       client.uploadStream(new NioManagedBuffer(streamHeader), blockData, callback)
     } else {
       // Convert or copy nio buffer into array in order to serialize it.
       val array = JavaUtils.bufferToArray(blockData.nioByteBuffer())
-
+      // 发送UploadBlock消息
+      // execId -> 上传目的地的Executor标识
       client.sendRpc(new UploadBlock(appId, execId, blockId.name, metadata, array).toByteBuffer,
         callback)
     }

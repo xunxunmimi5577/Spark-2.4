@@ -46,19 +46,22 @@ class BlockManagerMasterEndpoint(
   extends ThreadSafeRpcEndpoint with Logging {
 
   // Mapping from block manager id to the block manager's information.
+  // BlockManagerId -> BlockManagerInfo
   private val blockManagerInfo = new mutable.HashMap[BlockManagerId, BlockManagerInfo]
 
   // Mapping from executor ID to block manager ID.
+  // ExecutorId -> BlockMangerId
   private val blockManagerIdByExecutor = new mutable.HashMap[String, BlockManagerId]
 
   // Mapping from block id to the set of block managers that have the block.
+  // Key = BlockId ，value = 存储BlockId对应的Block的集合
   private val blockLocations = new JHashMap[BlockId, mutable.HashSet[BlockManagerId]]
 
   private val askThreadPool =
     ThreadUtils.newDaemonCachedThreadPool("block-manager-ask-thread-pool", 100)
   private implicit val askExecutionContext = ExecutionContext.fromExecutorService(askThreadPool)
 
-  private val topologyMapper = {
+  private val topologyMapper = {  // 对集群所有节点的拓扑结构的映射
     val topologyMapperClassName = conf.get(
       "spark.storage.replication.topologyMapper", classOf[DefaultTopologyMapper].getName)
     val clazz = Utils.classForName(topologyMapperClassName)
@@ -71,7 +74,7 @@ class BlockManagerMasterEndpoint(
   val proactivelyReplicate = conf.get("spark.storage.replication.proactive", "false").toBoolean
 
   logInfo("BlockManagerMasterEndpoint up")
-
+  // 重写了特质RpcEndpoint的receiveAndReply方法，用于接收BlockManager相关的消息
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
     case RegisterBlockManager(blockManagerId, maxOnHeapMemSize, maxOffHeapMemSize, slaveEndpoint) =>
       context.reply(register(blockManagerId, maxOnHeapMemSize, maxOffHeapMemSize, slaveEndpoint))
@@ -367,6 +370,8 @@ class BlockManagerMasterEndpoint(
       topologyMapper.getTopologyForHost(idWithoutTopologyInfo.host))
 
     val time = System.currentTimeMillis()
+    // 先看一下executor对应的BlockManager是否存在，如果存在则用新的id替换
+    // 且删除BlockManagerMaster中旧的BlockManager
     if (!blockManagerInfo.contains(id)) {
       blockManagerIdByExecutor.get(id.executorId) match {
         case Some(oldId) =>
@@ -378,9 +383,9 @@ class BlockManagerMasterEndpoint(
       }
       logInfo("Registering block manager %s with %s RAM, %s".format(
         id.hostPort, Utils.bytesToString(maxOnHeapMemSize + maxOffHeapMemSize), id))
-
+      // 将executor和新的BlockManagerId绑定到map
       blockManagerIdByExecutor(id.executorId) = id
-
+      // 将新的BlockManagerId和BlockManagerInfo的对应关系存到map
       blockManagerInfo(id) = new BlockManagerInfo(
         id, System.currentTimeMillis(), maxOnHeapMemSize, maxOffHeapMemSize, slaveEndpoint)
     }

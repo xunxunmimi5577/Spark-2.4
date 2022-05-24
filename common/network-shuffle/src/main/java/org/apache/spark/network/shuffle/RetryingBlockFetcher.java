@@ -136,15 +136,16 @@ public class RetryingBlockFetcher {
       myListener = currentListener;
     }
 
-    // Now initiate the fetch on all outstanding blocks, possibly initiating a retry if that fails.
+    // 开始对block的获取，并可能对获取失败的block进行重试
     try {
+        // 总是通过BlockFetchStarter调用createAndStart方法来获取block
       fetchStarter.createAndStart(blockIdsToFetch, myListener);
     } catch (Exception e) {
       logger.error(String.format("Exception while beginning fetch of %s outstanding blocks %s",
         blockIdsToFetch.length, numRetries > 0 ? "(after " + numRetries + " retries)" : ""), e);
 
       if (shouldRetry(e)) {
-        initiateRetry();
+        initiateRetry();  // 重试,异步调用当前方法
       } else {
         for (String bid : blockIdsToFetch) {
           listener.onBlockFetchFailure(bid, e);
@@ -163,9 +164,10 @@ public class RetryingBlockFetcher {
 
     logger.info("Retrying fetch ({}/{}) for {} outstanding blocks after {} ms",
       retryCount, maxRetries, outstandingBlocksIds.size(), retryWaitTime);
-
+    // 异步重试
     executorService.submit(() -> {
       Uninterruptibles.sleepUninterruptibly(retryWaitTime, TimeUnit.MILLISECONDS);
+      // 再次调用fetchAllOutstanding方法
       fetchAllOutstanding();
     });
   }

@@ -45,15 +45,18 @@ public class OneForOneStreamManager extends StreamManager {
   private final ConcurrentHashMap<Long, StreamState> streams;
 
   /** State of a single stream. */
+  // 使用StreamState来维护流的状态
   private static class StreamState {
     final String appId;
     final Iterator<ManagedBuffer> buffers;
 
     // The channel associated to the stream
+      // 与当前流相关联的Channel
     final Channel associatedChannel;
 
     // Used to keep track of the index of the buffer that the user has retrieved, just to ensure
     // that the caller only requests each chunk one at a time, in order.
+    // 跟踪客户端当前接收到的ManagerBuffer的索引，保证客户端按顺序每次请求一个块
     int curChunk = 0;
 
     // Used to keep track of the number of chunks being transferred and not finished yet.
@@ -73,9 +76,9 @@ public class OneForOneStreamManager extends StreamManager {
     streams = new ConcurrentHashMap<>();
   }
 
-  @Override
+  @Override  // 获取单个块，被封装成ManagerBuffer
   public ManagedBuffer getChunk(long streamId, int chunkIndex) {
-    StreamState state = streams.get(streamId);
+    StreamState state = streams.get(streamId);  // 获取stream的StreamState
     if (chunkIndex != state.curChunk) {
       throw new IllegalStateException(String.format(
         "Received out-of-order chunk index %s (expected %s)", chunkIndex, state.curChunk));
@@ -83,10 +86,10 @@ public class OneForOneStreamManager extends StreamManager {
       throw new IllegalStateException(String.format(
         "Requested chunk index beyond end %s", chunkIndex));
     }
-    state.curChunk += 1;
-    ManagedBuffer nextChunk = state.buffers.next();
+    state.curChunk += 1;   // 流中块的索引+1
+    ManagedBuffer nextChunk = state.buffers.next();  // 获取buffers中的ManagedBuffer
 
-    if (!state.buffers.hasNext()) {
+    if (!state.buffers.hasNext()) {  // buffers缓冲中的ManagedBuffer，已经全部被客户端获取
       logger.trace("Removing stream id {}", streamId);
       streams.remove(streamId);
     }
@@ -195,6 +198,7 @@ public class OneForOneStreamManager extends StreamManager {
    * to be the only reader of the stream. Once the connection is closed, the stream will never
    * be used again, enabling cleanup by `connectionTerminated`.
    */
+  // 关联一个流和一条TCP连接关联起来，保证单个流只会有一个客户端读取，流关闭后就不再重用
   public long registerStream(String appId, Iterator<ManagedBuffer> buffers, Channel channel) {
     long myStreamId = nextStreamId.getAndIncrement();
     streams.put(myStreamId, new StreamState(appId, buffers, channel));
